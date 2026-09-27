@@ -115,7 +115,9 @@ class Device:  # pylint: disable=too-many-instance-attributes
         return self._uuid
 
     def bus_id(self) -> str | NaType:
-        return NA
+        # The 950PR `npu-smi info` main table carries the PCIe Bus-Id (legacy
+        # tables do too); falls back to N/A when the field is absent.
+        return libnvml.nvmlQuery("ascendDeviceGetBusId", self.index)
 
     # ------------------------------------------------------------
     # 设备数量

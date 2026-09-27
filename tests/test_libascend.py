@@ -265,6 +265,47 @@ TEST_CASES = [
         },
     ),
 
+    (
+        # npusmi_950pr: Ascend950PR_9579 on npu-smi 25.7.rc1.6, verbatim capture
+        # from the real machine (2026-09-27).  The main table differs from the
+        # legacy 910*/310* layout: `NPU ID` and `Name` are separate columns, the
+        # second row leaves the chip / phy-id columns empty, and process rows
+        # carry a single `NPU ID` column.
+        """
++-------------------------------------------------------------------------------------------------+
+| npu-smi 25.7.rc1.6                               Version: 25.7.rc1.6                            |
++--------+------------------+---------------+-----------------------------------------------------+
+| NPU ID | Name             | Health        | Power(W)    Temp(C)           Hugepages-Usage(page) |
+|        |                  | Bus-Id        | NPU Util(%) Memory-Usage(MB)  HBM-Usage(MB)         |
++========+==================+===============+=====================================================+
+| 0      | Ascend950PR      | OK            | 210.3       64                0     / 0             |
+|        |                  | 0000:01:00.0  | 0           0    / 0          121576/ 131072        |
++========+==================+===============+=====================================================+
++---------------------------+---------------+-----------------------------------------------------+
+| NPU ID                    | Process id    | Process name             | Process memory(MB)       |
++===========================+===============+=====================================================+
+| 0                         | 210284        | sglangschedul            | 115929                  |
+| 0                         | 209907        | python                   | 284                     |
++===========================+===============+=====================================================+
+""",
+        {
+            0: {
+                'name': 'Ascend950PR',
+                'health': 'OK',
+                'power': 210300.0,
+                'temp': 64,
+                'procs': [(210284, 115929 * 1024 * 1024), (209907, 284 * 1024 * 1024)],
+                'bus_id': '0000:01:00.0',
+                'aicore': 0,
+                'hbm_used': 121576 * 1024 * 1024,
+                'hbm_total': 131072 * 1024 * 1024,
+                'util': libascend.Util(npu=0, mem=92.8, bandwidth='N/A', aicpu='N/A'),
+                'npu_id': 0,
+                'chip_id': 0,
+            },
+        },
+    ),
+
 ]
 
 
@@ -302,3 +343,36 @@ def test_npusmi_parse_ignores_transient_unknown_process():
     assert libascend._IDX == [0, 1]
     assert libascend._CACHE[0]["procs"] == []
     assert libascend._CACHE[1]["procs"] == []
+
+
+def test_950pr_patterns_do_not_match_legacy_tables():
+    """The 950PR patterns must stay mutually exclusive with the legacy tables."""
+    legacy_rows = [
+        # device row 1, process row of the 910B2C fixture
+        "| 0     910B2C              | OK            | 88.6        51                0    / 0             |",
+        "| 0       0                 | 124528        | python3.8                | 17400                   |",
+    ]
+    for row in legacy_rows:
+        assert libascend._RE_L1B.match(row) is None
+        assert libascend._RE_PB.match(row) is None
+
+    legacy_row2 = (
+        "| 0                         | 0000:5A:00.0  | 0           0    / 0          20701/ 65536         |"
+    )
+    assert libascend._RE_L2B.match(legacy_row2) is None
+    assert libascend._RE_L2.match(legacy_row2) is not None
+
+
+def test_950pr_bus_id_accessor():
+    reset_libascend_cache()
+
+    # TEST_CASES[-1] is the npusmi_950pr fixture (kept last on purpose).
+    libascend._update_cache(TEST_CASES[-1][0])
+
+    assert libascend.ascendDeviceGetBusId(0) == '0000:01:00.0'
+    assert libascend.ascendDeviceGetPowerLimit(0) == 600
+    assert libascend.ascendDeviceGetName(0) == 'Ascend950PR'
+    assert libascend.ascendDeviceGetProcessInfo(0) == [
+        libascend.ProcInfo(210284, 115929 * 1024 * 1024),
+        libascend.ProcInfo(209907, 284 * 1024 * 1024),
+    ]
