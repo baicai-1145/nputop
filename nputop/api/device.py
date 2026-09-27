@@ -115,7 +115,7 @@ class Device:  # pylint: disable=too-many-instance-attributes
         return self._uuid
 
     def bus_id(self) -> str | NaType:
-        return NA
+        return libnvml.nvmlQuery("ascendDeviceGetBusId", self.index)
 
     # ------------------------------------------------------------
     # 设备数量

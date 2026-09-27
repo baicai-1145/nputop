@@ -47,12 +47,36 @@ _POWER_LIMIT = {
     "910B2": 420,
     "910B3": 350,
     "910C": 350,
+    # Ascend950PR: rated board power of the Atlas 350 accelerator card (the
+    # 950PR product form), 600W per Huawei's public launch figures (2026-03,
+    # Huawei China Partner Conference / Atlas 350 product page).  npu-smi on
+    # this platform exposes no power-cap query (`npu-smi set` is refused inside
+    # containers, DCMI/DSMI power-cap symbols are unreachable), so the official
+    # board rating is used.
+    "Ascend950PR": 600,
 }
 _npu_chip_phy : dict[tuple[int, int], int] = {} # (npu id, chip_id) ↦ phy id
 # --------- Regex ----------
+# Device first row, legacy style (npu-smi <= 24.x, e.g. 910B/310P):
+#   "| NPU   Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |"
 _RE_L1 = re.compile(r"^\|\s*(\d+)\s+(\S+).*?\|\s*(\S+)\s+\|\s*(\S+)\s+(\d+)")
+# Device first row, Ascend950PR style (npu-smi >= 25.7): `NPU ID` and `Name` are
+# two separate columns, so the legacy pattern would capture the column separator
+# "|" as the chip name:
+#   "| NPU ID | Name        | Health | Power(W) Temp(C) Hugepages-Usage(page) |"
+_RE_L1B = re.compile(r"^\|\s*(\d+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s+(\d+)")
+# Device second row, legacy style:
+#   "| Chip | Phy-ID | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"
 _RE_L2 = re.compile(r"^\|\s*(\d+)\s+(\d*)\s*\|\s*([0-9A-Fa-f:.]+|NA)\s*\|\s*(\d+).*?\|$")
+# Device second row, Ascend950PR style: the chip/phy-id columns are left empty
+# and the columns are separated (Bus-Id first, then `NPU Util(%)`):
+#   "|        |        | 0000:01:00.0 | 0  0 / 0  121577/ 131072 |"
+_RE_L2B = re.compile(r"^\|\s*(\d*)\s*\|\s*(\d*)\s*\|\s*([0-9A-Fa-f:.]+|NA)\s*\|\s*(\d+).*?\|$")
+# Process row, legacy style: "| NPU   Chip | Process id | Process name | Process memory(MB) |"
 _RE_P  = re.compile(r"^\|\s*(\d+)\s+(\d+)\s+\|\s+(\d+)\s+\|.*?\|\s+(\d+)")
+# Process row, Ascend950PR style: a single `NPU ID` column (no chip column):
+#   "| NPU ID | Process id | Process name | Process memory(MB) |"
+_RE_PB = re.compile(r"^\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\|$")
 _RE_R = re.compile(r"^\|\s*(\S+)\s+([\d.rcRC]+)\s+Version:\s*([\d.rcRC]+)")
 
 Util = namedtuple("UtilizationRates", ["npu", "mem", "bandwidth", "aicpu"])
@@ -86,7 +110,8 @@ def _update_cache(raw: str = None) -> None:
         for ln in raw_iter:
             ln = ln.strip()
 
-            m1 = _RE_L1.match(ln)
+            # Ascend950PR (npu-smi >= 25.7) table first, legacy (910*/310*) as fallback
+            m1 = _RE_L1B.match(ln) or _RE_L1.match(ln)
             
             if m1:
                 npu_id, name, ok, pwr, tmp = m1.groups()
@@ -109,7 +134,7 @@ def _update_cache(raw: str = None) -> None:
                     chip_phy[(d['npu_id'], d['chip_id'])] = cur_id
                     break
 
-                m2 = _RE_L2.match(ln_l2)
+                m2 = _RE_L2B.match(ln_l2) or _RE_L2.match(ln_l2)
 
                 if m2:
                     chip_id, phy_id, bus, aic = m2.groups()
@@ -138,6 +163,19 @@ def _update_cache(raw: str = None) -> None:
                     d.update(ln1_data)
                     chip_phy[(d['npu_id'], d['chip_id'])] = cur_id
 
+                continue
+
+            # Ascend950PR (npu-smi >= 25.7) process row: a single NPU ID column,
+            # no chip column.  Tried first; a legacy `NPU  Chip` row cannot
+            # match it (its first field holds two whitespace-separated ids).
+            mpb = _RE_PB.match(ln)
+            if mpb:
+                npu_id, pid, _name, mem = mpb.groups()
+                phy_id = chip_phy.get((int(npu_id), 0))
+                if phy_id is None:
+                    continue
+                d = data.setdefault(phy_id, {})
+                d.setdefault("procs", []).append((int(pid), int(mem) * 1024 * 1024))
                 continue
 
             mp = _RE_P.match(ln)
@@ -176,6 +214,7 @@ def ascendDeviceGetCount() -> int:
     _update_cache(); return len(_IDX)
 
 def ascendDeviceGetName(i:int):             id=_phys(i); return _CACHE.get(id,{}).get("name",NA)
+def ascendDeviceGetBusId(i:int):            id=_phys(i); return _CACHE.get(id,{}).get("bus_id",NA)
 def ascendDeviceGetTemperature(i:int):      id=_phys(i); return _CACHE.get(id,{}).get("temp",NA)
 def ascendDeviceGetPowerUsage(i:int):       id=_phys(i); return _CACHE.get(id,{}).get("power",NA)
 def ascendDeviceGetUtilizationRates(i:int): id=_phys(i); return _CACHE.get(id,{}).get("util",NA)
