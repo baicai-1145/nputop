@@ -125,7 +125,8 @@
 
 - `python3.12 -m pip install -e /workspace/nputop` 成功（PyPI 包名 `ascend-nputop`，dist-info 落在 `/usr/local/python3.12.13/.../site-packages/`）。
 - 冒烟：`which nputop` → `/usr/local/python3.12.13/bin/nputop`；`nputop --version` → `nputop 0.0.5`；`nputop --once` 面板数据正确。
-- git：见下方提交记录（950pr-test 分支）。
+- git：commit `f8dcafb`，push 到 `origin 950pr-test` 成功（`53abe78..f8dcafb`）。
+- push 排障记录：首次 `git push origin` 挂死无输出。根因：`~/.gitconfig` 存在全局 `url.insteadOf` 把 `https://github.com/` 重写到 `https://ghfast.top/`（只读加速代理，不支持 push，且重写显式 github URL）；凭据仓库中只有 gitcode.com 凭据，无 GitHub HTTPS 凭据。解法：本机 `~/.ssh/id_ed25519` 对 `git@github.com` 认证可用（`Hi baicai-1145!`），改用 SSH push 成功；并给 origin 配置了独立 pushurl（`git remote set-url --add --push origin git@github.com:baicai-1145/nputop.git`），此后 `git push origin 950pr-test` 端到端可用（fetch 仍走 ghfast 加速）。
 
 ### 存疑点（如实记录）
 
