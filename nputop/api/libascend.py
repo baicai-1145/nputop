@@ -47,12 +47,26 @@ _POWER_LIMIT = {
     "910B2": 420,
     "910B3": 350,
     "910C": 350,
+    # Ascend950PR: board-level rated power of Atlas 350 (the 950PR card),
+    # announced by Huawei (2026-03). npu-smi does not expose a power-limit
+    # query on this platform, so the official figure is used here.
+    "Ascend950PR": 600,
 }
 _npu_chip_phy : dict[tuple[int, int], int] = {} # (npu id, chip_id) ↦ phy id
 # --------- Regex ----------
+# Device first row, legacy style:  "| NPU   Name                | Health | Power(W) Temp(C) Hugepages-Usage(page)|"
 _RE_L1 = re.compile(r"^\|\s*(\d+)\s+(\S+).*?\|\s*(\S+)\s+\|\s*(\S+)\s+(\d+)")
+# Device first row, 950PR style: "| NPU ID | Name             | Health | Power(W) Temp(C) Hugepages-Usage(page) |"
+# (NPU ID and Name are two separate columns; second row leaves both columns empty)
+_RE_L1B = re.compile(r"^\|\s*(\d+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s+(\d+)")
+# Device second row, legacy style:  "| Chip | Bus-Id       | AICore(%)  Memory-Usage(MB) HBM-Usage(MB) |"
 _RE_L2 = re.compile(r"^\|\s*(\d+)\s+(\d*)\s*\|\s*([0-9A-Fa-f:.]+|NA)\s*\|\s*(\d+).*?\|$")
+# Device second row, 950PR style: "| (empty) | (empty) | Bus-Id      | NPU Util(%) Memory-Usage(MB) HBM-Usage(MB) |"
+_RE_L2B = re.compile(r"^\|\s*(\d*)\s*\|\s*(\d*)\s*\|\s*([0-9A-Fa-f:.]+|NA)\s*\|\s*(\d+).*?\|$")
+# Process row, legacy style: "| NPU   Chip | Process id  | Process name | Process memory(MB) |"
 _RE_P  = re.compile(r"^\|\s*(\d+)\s+(\d+)\s+\|\s+(\d+)\s+\|.*?\|\s+(\d+)")
+# Process row, 950PR style:  "| NPU ID  | Process id | Process name | Process memory(MB) |" (single ID column)
+_RE_PB = re.compile(r"^\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\|$")
 _RE_R = re.compile(r"^\|\s*(\S+)\s+([\d.rcRC]+)\s+Version:\s*([\d.rcRC]+)")
 
 Util = namedtuple("UtilizationRates", ["npu", "mem", "bandwidth", "aicpu"])
@@ -86,7 +100,8 @@ def _update_cache(raw: str = None) -> None:
         for ln in raw_iter:
             ln = ln.strip()
 
-            m1 = _RE_L1.match(ln)
+            # 950PR-style device row first, legacy (910*/310*) style as fallback
+            m1 = _RE_L1B.match(ln) or _RE_L1.match(ln)
             
             if m1:
                 npu_id, name, ok, pwr, tmp = m1.groups()
@@ -109,7 +124,7 @@ def _update_cache(raw: str = None) -> None:
                     chip_phy[(d['npu_id'], d['chip_id'])] = cur_id
                     break
 
-                m2 = _RE_L2.match(ln_l2)
+                m2 = _RE_L2B.match(ln_l2) or _RE_L2.match(ln_l2)
 
                 if m2:
                     chip_id, phy_id, bus, aic = m2.groups()
@@ -138,6 +153,17 @@ def _update_cache(raw: str = None) -> None:
                     d.update(ln1_data)
                     chip_phy[(d['npu_id'], d['chip_id'])] = cur_id
 
+                continue
+
+            mpb = _RE_PB.match(ln)
+            if mpb:
+                # 950PR-style process row: single NPU ID column (no chip column)
+                npu_id, pid, _pname, mem = mpb.groups()
+                phy_id = chip_phy.get((int(npu_id), 0))
+                if phy_id is None:
+                    continue
+                d = data.setdefault(phy_id, {})
+                d.setdefault("procs", []).append((int(pid), int(mem) * 1024 * 1024))
                 continue
 
             mp = _RE_P.match(ln)
